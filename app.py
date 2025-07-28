@@ -72,6 +72,20 @@ def parse_dates(df, date_columns):
             df[col] = pd.to_datetime(df[col], errors='coerce')
     return df
 
+def get_safe_column_values(df, column_name, default_value='N/A'):
+    """Safely get unique values from a column"""
+    if column_name in df.columns:
+        return sorted(df[column_name].dropna().unique().tolist())
+    else:
+        return [default_value]
+
+def safe_column_access(df, column_name, default_value=None):
+    """Safely access a column, return default if column doesn't exist"""
+    if column_name in df.columns:
+        return df[column_name]
+    else:
+        return pd.Series([default_value] * len(df))
+
 def get_rag_color(status):
     """Get color for RAG status"""
     if pd.isna(status):
@@ -120,6 +134,17 @@ def main():
     
     # Data preprocessing
     with st.spinner("Processing data..."):
+        # Display available columns for debugging
+        with st.expander("📋 Available Columns in Your Data", expanded=False):
+            st.write("**Column Names:**")
+            col_df = pd.DataFrame({
+                'Column Name': df.columns.tolist(),
+                'Data Type': [str(dtype) for dtype in df.dtypes],
+                'Non-Null Count': [df[col].notna().sum() for col in df.columns],
+                'Sample Value': [str(df[col].iloc[0]) if len(df) > 0 and df[col].notna().any() else 'N/A' for col in df.columns]
+            })
+            st.dataframe(col_df, use_container_width=True)
+        
         # Identify numeric columns for CAPEX and financial data
         numeric_cols = ['OTC', 'ARC', 'OB VALUE', 'LM CAPEX', 'NETWORK CAPEX', 
                        'CPE CAPEX', 'OFFNET OTC', 'OFFNET ARC', 'POLE CAPEX',
@@ -147,30 +172,30 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                zones = ['All'] + sorted(df['ZONE'].dropna().unique().tolist())
+                zones = ['All'] + get_safe_column_values(df, 'ZONE')
                 selected_zone = st.selectbox("Zone", zones)
                 
             with col2:
-                circles = ['All'] + sorted(df['A END CIRCLE'].dropna().unique().tolist())
+                circles = ['All'] + get_safe_column_values(df, 'A END CIRCLE')
                 selected_circle = st.selectbox("Circle", circles)
                 
             with col3:
-                statuses = ['All'] + sorted(df['CONNECTED STATUS'].dropna().unique().tolist())
+                statuses = ['All'] + get_safe_column_values(df, 'CONNECTED STATUS')
                 selected_status = st.selectbox("Connection Status", statuses)
                 
             with col4:
-                customers = ['All'] + sorted(df['CUSTOMER NAME'].dropna().unique().tolist())
+                customers = ['All'] + get_safe_column_values(df, 'CUSTOMER NAME')
                 selected_customer = st.selectbox("Customer", customers)
         
         # Apply filters
         filtered_df = df.copy()
-        if selected_zone != 'All':
+        if selected_zone != 'All' and 'ZONE' in df.columns:
             filtered_df = filtered_df[filtered_df['ZONE'] == selected_zone]
-        if selected_circle != 'All':
+        if selected_circle != 'All' and 'A END CIRCLE' in df.columns:
             filtered_df = filtered_df[filtered_df['A END CIRCLE'] == selected_circle]
-        if selected_status != 'All':
+        if selected_status != 'All' and 'CONNECTED STATUS' in df.columns:
             filtered_df = filtered_df[filtered_df['CONNECTED STATUS'] == selected_status]
-        if selected_customer != 'All':
+        if selected_customer != 'All' and 'CUSTOMER NAME' in df.columns:
             filtered_df = filtered_df[filtered_df['CUSTOMER NAME'] == selected_customer]
         
         # Key Metrics
@@ -181,82 +206,107 @@ def main():
             st.metric("Total Orders", f"{total_orders:,}")
         
         with col2:
-            connected = len(filtered_df[filtered_df['CONNECTED STATUS'].str.contains('Connected', na=False)])
-            connection_rate = (connected / total_orders * 100) if total_orders > 0 else 0
-            st.metric("Connected", f"{connected:,}", f"{connection_rate:.1f}%")
+            if 'CONNECTED STATUS' in filtered_df.columns:
+                connected = len(filtered_df[filtered_df['CONNECTED STATUS'].str.contains('Connected', na=False)])
+                connection_rate = (connected / total_orders * 100) if total_orders > 0 else 0
+                st.metric("Connected", f"{connected:,}", f"{connection_rate:.1f}%")
+            else:
+                st.metric("Connected", "N/A", "Data not available")
         
         with col3:
-            total_capex = filtered_df[['LM CAPEX', 'NETWORK CAPEX', 'CPE CAPEX', 'POLE CAPEX']].sum().sum()
-            st.metric("Total CAPEX", f"₹{total_capex:,.0f}")
+            if any(col in filtered_df.columns for col in ['LM CAPEX', 'NETWORK CAPEX', 'CPE CAPEX', 'POLE CAPEX']):
+                capex_columns = [col for col in ['LM CAPEX', 'NETWORK CAPEX', 'CPE CAPEX', 'POLE CAPEX'] if col in filtered_df.columns]
+                total_capex = filtered_df[capex_columns].sum().sum()
+                st.metric("Total CAPEX", f"₹{total_capex:,.0f}")
+            else:
+                st.metric("Total CAPEX", "N/A", "Data not available")
         
         with col4:
-            avg_aging = filtered_df['OVERALL AGING'].mean()
-            st.metric("Avg Aging (Days)", f"{avg_aging:.0f}" if not pd.isna(avg_aging) else "N/A")
+            if 'OVERALL AGING' in filtered_df.columns:
+                avg_aging = filtered_df['OVERALL AGING'].mean()
+                st.metric("Avg Aging (Days)", f"{avg_aging:.0f}" if not pd.isna(avg_aging) else "N/A")
+            else:
+                st.metric("Avg Aging (Days)", "N/A", "Data not available")
         
         with col5:
-            on_hold = len(filtered_df[filtered_df['CONNECTED STATUS'].str.contains('Hold', na=False)])
-            st.metric("On Hold", f"{on_hold:,}")
+            if 'CONNECTED STATUS' in filtered_df.columns:
+                on_hold = len(filtered_df[filtered_df['CONNECTED STATUS'].str.contains('Hold', na=False)])
+                st.metric("On Hold", f"{on_hold:,}")
+            else:
+                st.metric("On Hold", "N/A", "Data not available")
         
         # Charts
         col1, col2 = st.columns(2)
         
         with col1:
             # Status Distribution
-            status_counts = filtered_df['CONNECTED STATUS'].value_counts()
-            fig_status = px.pie(
-                values=status_counts.values,
-                names=status_counts.index,
-                title="Connection Status Distribution",
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            st.plotly_chart(fig_status, use_container_width=True)
+            if 'CONNECTED STATUS' in filtered_df.columns:
+                status_counts = filtered_df['CONNECTED STATUS'].value_counts()
+                fig_status = px.pie(
+                    values=status_counts.values,
+                    names=status_counts.index,
+                    title="Connection Status Distribution",
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                st.plotly_chart(fig_status, use_container_width=True)
+            else:
+                st.warning("CONNECTED STATUS column not found")
         
         with col2:
             # Zone-wise Orders
-            zone_counts = filtered_df['ZONE'].value_counts()
-            fig_zone = px.bar(
-                x=zone_counts.index,
-                y=zone_counts.values,
-                title="Orders by Zone",
-                labels={'x': 'Zone', 'y': 'Order Count'},
-                color=zone_counts.values,
-                color_continuous_scale='Blues'
-            )
-            st.plotly_chart(fig_zone, use_container_width=True)
+            if 'ZONE' in filtered_df.columns:
+                zone_counts = filtered_df['ZONE'].value_counts()
+                fig_zone = px.bar(
+                    x=zone_counts.index,
+                    y=zone_counts.values,
+                    title="Orders by Zone",
+                    labels={'x': 'Zone', 'y': 'Order Count'},
+                    color=zone_counts.values,
+                    color_continuous_scale='Blues'
+                )
+                st.plotly_chart(fig_zone, use_container_width=True)
+            else:
+                st.warning("ZONE column not found")
         
         # RAG Status Analysis
         col1, col2 = st.columns(2)
         
         with col1:
-            rag_counts = filtered_df['RAG STATUS'].value_counts()
-            fig_rag = px.bar(
-                x=rag_counts.index,
-                y=rag_counts.values,
-                title="RAG Status Distribution",
-                labels={'x': 'RAG Status', 'y': 'Count'},
-                color=rag_counts.index,
-                color_discrete_map={
-                    'GREEN': 'green',
-                    'RED': 'red',
-                    'YELLOW': 'orange',
-                    'CAPTIVE': 'blue'
-                }
-            )
-            st.plotly_chart(fig_rag, use_container_width=True)
+            if 'RAG STATUS' in filtered_df.columns:
+                rag_counts = filtered_df['RAG STATUS'].value_counts()
+                fig_rag = px.bar(
+                    x=rag_counts.index,
+                    y=rag_counts.values,
+                    title="RAG Status Distribution",
+                    labels={'x': 'RAG Status', 'y': 'Count'},
+                    color=rag_counts.index,
+                    color_discrete_map={
+                        'GREEN': 'green',
+                        'RED': 'red',
+                        'YELLOW': 'orange',
+                        'CAPTIVE': 'blue'
+                    }
+                )
+                st.plotly_chart(fig_rag, use_container_width=True)
+            else:
+                st.warning("RAG STATUS column not found")
         
         with col2:
             # Customer-wise Orders
-            customer_counts = filtered_df['CUSTOMER NAME'].value_counts().head(10)
-            fig_customer = px.bar(
-                x=customer_counts.values,
-                y=customer_counts.index,
-                orientation='h',
-                title="Top 10 Customers by Order Count",
-                labels={'x': 'Order Count', 'y': 'Customer'},
-                color=customer_counts.values,
-                color_continuous_scale='Greens'
-            )
-            st.plotly_chart(fig_customer, use_container_width=True)
+            if 'CUSTOMER NAME' in filtered_df.columns:
+                customer_counts = filtered_df['CUSTOMER NAME'].value_counts().head(10)
+                fig_customer = px.bar(
+                    x=customer_counts.values,
+                    y=customer_counts.index,
+                    orientation='h',
+                    title="Top 10 Customers by Order Count",
+                    labels={'x': 'Order Count', 'y': 'Customer'},
+                    color=customer_counts.values,
+                    color_continuous_scale='Greens'
+                )
+                st.plotly_chart(fig_customer, use_container_width=True)
+            else:
+                st.warning("CUSTOMER NAME column not found")
     
     # Tab 2: Geographic Analysis
     with tab2:
@@ -265,25 +315,41 @@ def main():
         # Map filters
         col1, col2, col3 = st.columns(3)
         with col1:
-            map_color_by = st.selectbox(
-                "Color Points By",
-                ['CONNECTED STATUS', 'RAG STATUS', 'ZONE', 'A END CIRCLE', 'CUSTOMER NAME']
-            )
+            available_color_cols = [col for col in ['CONNECTED STATUS', 'RAG STATUS', 'ZONE', 'A END CIRCLE', 'CUSTOMER NAME'] if col in filtered_df.columns]
+            if available_color_cols:
+                map_color_by = st.selectbox("Color Points By", available_color_cols)
+            else:
+                map_color_by = None
+                st.warning("No suitable columns found for coloring")
+                
         with col2:
-            map_size_by = st.selectbox(
-                "Size Points By",
-                ['None', 'OB VALUE', 'LM CAPEX', 'OVERALL AGING']
-            )
+            available_size_cols = [col for col in ['OB VALUE', 'LM CAPEX', 'OVERALL AGING'] if col in filtered_df.columns]
+            if available_size_cols:
+                map_size_by = st.selectbox("Size Points By", ['None'] + available_size_cols)
+            else:
+                map_size_by = 'None'
+                
         with col3:
             show_only_connected = st.checkbox("Show Only Valid Coordinates")
         
         # Prepare map data
         map_df = filtered_df.copy()
+        
+        # Check if coordinate columns exist
+        if 'LATTITUDE' not in map_df.columns or 'LONGITUDE' not in map_df.columns:
+            st.error("Latitude and Longitude columns not found in the data. Geographic analysis is not available.")
+            st.info("Required columns: 'LATTITUDE', 'LONGITUDE'")
+            return
+            
         if show_only_connected:
             map_df = map_df.dropna(subset=['LATTITUDE', 'LONGITUDE'])
             map_df = map_df[(map_df['LATTITUDE'] != 0) & (map_df['LONGITUDE'] != 0)]
         
-        if len(map_df) > 0:
+        if len(map_df) > 0 and map_color_by:
+            # Create hover data - only include columns that exist
+            hover_cols = ['CIRCUIT ID', 'CUSTOMER NAME', 'AREA', 'CONNECTED STATUS']
+            available_hover_cols = [col for col in hover_cols if col in map_df.columns]
+            
             # Create map
             fig_map = px.scatter_mapbox(
                 map_df,
@@ -291,7 +357,7 @@ def main():
                 lon='LONGITUDE',
                 color=map_color_by,
                 size=map_size_by if map_size_by != 'None' else None,
-                hover_data=['CIRCUIT ID', 'CUSTOMER NAME', 'AREA', 'CONNECTED STATUS'],
+                hover_data=available_hover_cols,
                 title=f"Geographic Distribution of Orders",
                 mapbox_style='open-street-map',
                 height=600,
@@ -304,13 +370,19 @@ def main():
             with col1:
                 st.metric("Orders with Coordinates", len(map_df))
             with col2:
-                unique_areas = map_df['AREA'].nunique()
-                st.metric("Unique Areas", unique_areas)
+                if 'AREA' in map_df.columns:
+                    unique_areas = map_df['AREA'].nunique()
+                    st.metric("Unique Areas", unique_areas)
+                else:
+                    st.metric("Unique Areas", "N/A")
             with col3:
-                unique_districts = map_df['DISTRICT'].nunique()
-                st.metric("Unique Districts", unique_districts)
+                if 'DISTRICT' in map_df.columns:
+                    unique_districts = map_df['DISTRICT'].nunique()
+                    st.metric("Unique Districts", unique_districts)
+                else:
+                    st.metric("Unique Districts", "N/A")
         else:
-            st.warning("No valid geographic coordinates found in filtered data")
+            st.warning("No valid geographic coordinates found in filtered data or no color column available")
     
     # Tab 3: Financial Analysis
     with tab3:
